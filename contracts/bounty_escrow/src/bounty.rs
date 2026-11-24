@@ -60,8 +60,7 @@ pub(crate) fn fund_bounty(
     );
     storage::set_active(&env, repo_id, issue, id);
     let mut t = storage::get_totals(&env, &token);
-    t.funded = add(t.funded, amount)?;
-    t.held = add(t.held, amount)?;
+    t.record_fund(amount)?;
     storage::set_totals(&env, &token, &t);
 
     token::Client::new(&env, &token).transfer(&maintainer, env.current_contract_address(), &amount);
@@ -92,7 +91,7 @@ pub(crate) fn release(
     if b.status != Status::Open {
         return Err(Error::InvalidStatus);
     }
-    if authorize_release(&env, &caller, &b, &cfg)? {
+    if authorize_release(&caller, &b, &cfg)? == ReleaseRole::Relayer {
         charge_relayer(&env, &b.token, b.amount)?;
     }
     if winner == b.maintainer || winner == env.current_contract_address() {
@@ -101,10 +100,7 @@ pub(crate) fn release(
     let fee = fees::fee(b.amount, b.fee_bps)?;
     let net = fees::net(b.amount, b.fee_bps)?;
 
-    b.status = Status::Released;
-    b.winner = Some(winner.clone());
-    storage::set_bounty(&env, &b);
-    storage::clear_active(&env, b.repo_id, b.issue);
+    close_bounty(&env, &mut b, Status::Released, Some(winner.clone()));
 
     let tok = token::Client::new(&env, &b.token);
     let me = env.current_contract_address();
@@ -125,12 +121,7 @@ pub(crate) fn release(
     }
 
     let mut t = storage::get_totals(&env, &b.token);
-    if paid {
-        t.released_net = add(t.released_net, net)?;
-    }
-    t.fees = add(t.fees, fee)?;
-    t.accrued_fees = add(t.accrued_fees, fee)?;
-    t.held = sub(t.held, b.amount)?;
+    t.record_payout(b.amount, net, fee, paid)?;
     storage::set_totals(&env, &b.token, &t);
     events::Released {
         id: bounty_id,
@@ -163,7 +154,7 @@ pub(crate) fn release_split(
     if winners.is_empty() || winners.len() > MAX_WINNERS {
         return Err(Error::InvalidWinners);
     }
-    if authorize_release(&env, &caller, &b, &cfg)? {
+    if authorize_release(&caller, &b, &cfg)? == ReleaseRole::Relayer {
         charge_relayer(&env, &b.token, b.amount)?;
     }
 
@@ -212,20 +203,14 @@ pub(crate) fn release_split(
         },
     );
 
-    b.status = Status::Released;
-    b.winner = None;
-    storage::set_bounty(&env, &b);
-    storage::clear_active(&env, b.repo_id, b.issue);
+    close_bounty(&env, &mut b, Status::Released, None);
     let tok = token::Client::new(&env, &b.token);
     let me = env.current_contract_address();
     for payout in payouts.iter() {
         tok.transfer(&me, &payout.winner, &payout.amount);
     }
     let mut totals = storage::get_totals(&env, &b.token);
-    totals.released_net = add(totals.released_net, net)?;
-    totals.fees = add(totals.fees, fee)?;
-    totals.accrued_fees = add(totals.accrued_fees, fee)?;
-    totals.held = sub(totals.held, b.amount)?;
+    totals.record_payout(b.amount, net, fee, true)?;
     storage::set_totals(&env, &b.token, &totals);
     events::ReleasedSplit {
         id: bounty_id,
@@ -259,12 +244,9 @@ pub(crate) fn refund(
     if env.ledger().timestamp() < opens {
         return Err(Error::DeadlineNotReached);
     }
-    b.status = Status::Refunded;
-    storage::set_bounty(&env, &b);
-    storage::clear_active(&env, b.repo_id, b.issue);
+    close_bounty(&env, &mut b, Status::Refunded, None);
     let mut t = storage::get_totals(&env, &b.token);
-    t.refunded = add(t.refunded, b.amount)?;
-    t.held = sub(t.held, b.amount)?;
+    t.record_refund(b.amount)?;
     storage::set_totals(&env, &b.token, &t);
 
     token::Client::new(&env, &b.token).transfer(
@@ -423,8 +405,7 @@ pub(crate) fn top_up(
     storage::set_bounty(&env, &b);
     storage::set_top_ups(&env, bounty_id, uses.checked_add(1).ok_or(Error::Overflow)?);
     let mut t = storage::get_totals(&env, &b.token);
-    t.funded = add(t.funded, extra)?;
-    t.held = add(t.held, extra)?;
+    t.record_fund(extra)?;
     storage::set_totals(&env, &b.token, &t);
 
     token::Client::new(&env, &b.token).transfer(
@@ -475,7 +456,7 @@ pub(crate) fn claim(env: Env, winner: Address, bounty_id: u64) -> Result<(), Err
     storage::set_claim(&env, bounty_id, &record);
     undefer(&env, &b.token, record.net)?;
     let mut t = storage::get_totals(&env, &b.token);
-    t.released_net = add(t.released_net, record.net)?;
+    t.record_claim(record.net)?;
     storage::set_totals(&env, &b.token, &t);
 
     token::Client::new(&env, &b.token).transfer(

@@ -46,6 +46,36 @@ fn relayer_releases_when_allowed() {
 }
 
 #[test]
+fn release_authorization_returns_each_authorized_role() {
+    let c = Ctx::new();
+    let id = c.fund_with(1, 100 * UNIT, false);
+    let bounty = c.client.get_bounty(&id);
+    let config = c.client.get_config();
+
+    assert_eq!(
+        crate::authorize_release(&c.maintainer, &bounty, &config),
+        Ok(crate::ReleaseRole::Maintainer)
+    );
+    assert_eq!(
+        crate::authorize_release(&c.relayer, &bounty, &config),
+        Err(Error::RelayerNotAllowed)
+    );
+
+    let relayer_bounty = {
+        let id = c.fund_with(2, 100 * UNIT, true);
+        c.client.get_bounty(&id)
+    };
+    assert_eq!(
+        crate::authorize_release(&c.relayer, &relayer_bounty, &config),
+        Ok(crate::ReleaseRole::Relayer)
+    );
+    assert_eq!(
+        crate::authorize_release(&Address::generate(&c.env), &bounty, &config),
+        Err(Error::Unauthorized)
+    );
+}
+
+#[test]
 fn relayer_rejected_when_not_allowed() {
     let c = Ctx::new();
     let id = c.fund_with(1, 100 * UNIT, false);

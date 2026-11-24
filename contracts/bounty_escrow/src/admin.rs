@@ -280,11 +280,10 @@ pub(crate) fn withdraw_fees(env: Env, caller: Address, token: Address) -> Result
         return Err(Error::Unauthorized);
     }
     let mut t = storage::get_totals(&env, &token);
-    let amount = t.accrued_fees;
+    let amount = t.record_fee_withdrawal();
     if amount <= 0 {
         return Err(Error::AmountTooSmall);
     }
-    t.accrued_fees = 0;
     storage::set_totals(&env, &token, &t);
 
     token::Client::new(&env, &token).transfer(

@@ -396,7 +396,9 @@ const WASM: &[u8] = include_bytes!("../../../../target/wasm32v1-none/release/bou
 #[test]
 fn upgrade_swaps_the_code_and_keeps_state() {
     let c = Ctx::new();
-    let id = c.fund(1);
+    let open_id = c.fund(1);
+    let disputed_id = c.fund(2);
+    c.client.open_dispute(&c.maintainer, &disputed_id);
     let hash = c.env.deployer().upload_contract_wasm(WASM);
     c.client.propose_upgrade(&c.admin, &hash);
     assert_eq!(
@@ -405,10 +407,19 @@ fn upgrade_swaps_the_code_and_keeps_state() {
     );
     c.set_time(c.now() + 90 * DAY + GRACE);
     c.client.execute_upgrade(&c.admin);
-    // state survives and the (same) code still answers
-    assert_eq!(c.client.get_bounty(&id).amount, 100 * UNIT);
+    assert_eq!(c.client.get_bounty(&open_id).amount, 100 * UNIT);
+    assert_eq!(c.client.get_bounty(&open_id).status, Status::Open);
+    assert_eq!(c.client.get_bounty(&disputed_id).status, Status::Disputed);
     assert_eq!(c.client.get_config().admin, c.admin);
-    c.client.release(&c.maintainer, &id, &c.winner);
+    c.client.release(&c.maintainer, &open_id, &c.winner);
+    c.client
+        .resolve(&c.arbiter, &disputed_id, &Some(c.winner.clone()), &10_000);
+    assert_eq!(c.client.get_bounty(&open_id).status, Status::Released);
+    assert_eq!(
+        c.client.get_bounty(&disputed_id).status,
+        Status::Resolved
+    );
+    c.assert_invariant(&c.token);
 }
 
 #[test]

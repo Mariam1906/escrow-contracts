@@ -69,18 +69,23 @@ fn undefer(env: &Env, token: &Address, net: i128) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReleaseRole {
+    Maintainer,
+    Relayer,
+}
+
 fn authorize_release(
-    _env: &Env,
     caller: &Address,
     b: &Bounty,
     cfg: &Config,
-) -> Result<bool, Error> {
+) -> Result<ReleaseRole, Error> {
     // #101: the maintainer check runs first, so if `cfg.relayer` has been
     // set to this same address, that release takes the maintainer path —
     // `relayer_allowed` and the relayer rate limit are not consulted at all.
     // `SelfPayout` and every other release check still apply as normal.
     if *caller == b.maintainer {
-        return Ok(false);
+        return Ok(ReleaseRole::Maintainer);
     }
     if *caller != cfg.relayer {
         return Err(Error::Unauthorized);
@@ -88,7 +93,14 @@ fn authorize_release(
     if !b.relayer_allowed {
         return Err(Error::RelayerNotAllowed);
     }
-    Ok(true)
+    Ok(ReleaseRole::Relayer)
+}
+
+fn close_bounty(env: &Env, bounty: &mut Bounty, status: Status, winner: Option<Address>) {
+    bounty.status = status;
+    bounty.winner = winner;
+    storage::set_bounty(env, bounty);
+    storage::clear_active(env, bounty.repo_id, bounty.issue);
 }
 
 fn charge_relayer(env: &Env, token: &Address, amount: i128) -> Result<(), Error> {
@@ -948,10 +960,8 @@ fn settle(
     }
     let maintainer_amount = sub(b.amount, portion)?;
 
-    b.status = Status::Resolved;
-    b.winner = if winner_bps > 0 { winner.clone() } else { None };
-    storage::set_bounty(env, &b);
-    storage::clear_active(env, b.repo_id, b.issue);
+    let bounty_winner = if winner_bps > 0 { winner.clone() } else { None };
+    close_bounty(env, &mut b, Status::Resolved, bounty_winner);
 
     let tok = token::Client::new(env, &b.token);
     let me = env.current_contract_address();
@@ -973,13 +983,13 @@ fn settle(
     }
 
     let mut t = storage::get_totals(env, &b.token);
-    if winner_net > 0 && !winner_deferred {
-        t.released_net = add(t.released_net, winner_net)?;
-    }
-    t.fees = add(t.fees, fee)?;
-    t.accrued_fees = add(t.accrued_fees, fee)?;
-    t.refunded = add(t.refunded, maintainer_amount)?;
-    t.held = sub(t.held, b.amount)?;
+    t.record_resolution(
+        b.amount,
+        winner_net,
+        fee,
+        maintainer_amount,
+        !winner_deferred,
+    )?;
     storage::set_totals(env, &b.token, &t);
     if maintainer_amount > 0 {
         tok.transfer(&me, &b.maintainer, &maintainer_amount);

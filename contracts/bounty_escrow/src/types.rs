@@ -1,5 +1,7 @@
 use soroban_sdk::{contracttype, Address, BytesN};
 
+use crate::{add, sub, Error};
+
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Status {
@@ -121,6 +123,82 @@ pub struct Totals {
     pub refunded: i128,
     pub held: i128,
     pub accrued_fees: i128,
+}
+
+impl Totals {
+    pub(crate) fn record_fund(&mut self, amount: i128) -> Result<(), Error> {
+        let funded = add(self.funded, amount)?;
+        let held = add(self.held, amount)?;
+        self.funded = funded;
+        self.held = held;
+        Ok(())
+    }
+
+    pub(crate) fn record_payout(
+        &mut self,
+        amount: i128,
+        net: i128,
+        fee: i128,
+        paid: bool,
+    ) -> Result<(), Error> {
+        let released_net = if paid {
+            add(self.released_net, net)?
+        } else {
+            self.released_net
+        };
+        let fees = add(self.fees, fee)?;
+        let accrued_fees = add(self.accrued_fees, fee)?;
+        let held = sub(self.held, amount)?;
+        self.released_net = released_net;
+        self.fees = fees;
+        self.accrued_fees = accrued_fees;
+        self.held = held;
+        Ok(())
+    }
+
+    pub(crate) fn record_refund(&mut self, amount: i128) -> Result<(), Error> {
+        let refunded = add(self.refunded, amount)?;
+        let held = sub(self.held, amount)?;
+        self.refunded = refunded;
+        self.held = held;
+        Ok(())
+    }
+
+    pub(crate) fn record_claim(&mut self, net: i128) -> Result<(), Error> {
+        self.released_net = add(self.released_net, net)?;
+        Ok(())
+    }
+
+    pub(crate) fn record_fee_withdrawal(&mut self) -> i128 {
+        let amount = self.accrued_fees;
+        self.accrued_fees = 0;
+        amount
+    }
+
+    pub(crate) fn record_resolution(
+        &mut self,
+        amount: i128,
+        winner_net: i128,
+        fee: i128,
+        maintainer_amount: i128,
+        winner_paid: bool,
+    ) -> Result<(), Error> {
+        let released_net = if winner_net > 0 && winner_paid {
+            add(self.released_net, winner_net)?
+        } else {
+            self.released_net
+        };
+        let fees = add(self.fees, fee)?;
+        let accrued_fees = add(self.accrued_fees, fee)?;
+        let refunded = add(self.refunded, maintainer_amount)?;
+        let held = sub(self.held, amount)?;
+        self.released_net = released_net;
+        self.fees = fees;
+        self.accrued_fees = accrued_fees;
+        self.refunded = refunded;
+        self.held = held;
+        Ok(())
+    }
 }
 
 /// Written by `open_dispute`. Its presence means the bounty has used its one dispute.
